@@ -11,6 +11,33 @@
 #include <X11/extensions/scrnsaver.h>
 
 #define TEMPFILE "/tmp/upwork.png"
+#define CACHEFILE "/tmp/upwork-cache.png"
+
+// Check if current workspace is in the allowed list (8, 9, 0)
+int is_allowed_workspace() {
+    FILE *fp = popen("hyprctl activeworkspace -j | jq -r '.id'", "r");
+    if(!fp) {
+        printf("WARNING: Could not check workspace, allowing screenshot\n");
+        return 1; // Default to allowing if we can't check
+    }
+    char buf[32];
+    if(!fgets(buf, sizeof(buf), fp)) {
+        printf("WARNING: Could not read workspace, allowing screenshot\n");
+        pclose(fp);
+        return 1;
+    }
+    pclose(fp);
+
+    int workspace_id = atoi(buf);
+    printf("Current workspace: %d\n", workspace_id);
+
+    // Check if workspace is 8, 9, or 10 (Hyprland uses 10 for "0" key)
+    if(workspace_id == 8 || workspace_id == 9 || workspace_id == 10) {
+        return 1;
+    }
+
+    return 0;
+}
 
 int screenshot() {
     // override environment
@@ -48,21 +75,70 @@ int screenshot() {
 
 extern GdkPixbuf* gdk_pixbuf_get_from_window(void *window, gint src_x, gint src_y, gint width, gint height) {
     printf("Preparing to take screenshot...\n");
-    int res = screenshot();
-    if(res != 0) {
-        printf("ScreenshotS call failed: %d\n", res);
-        return NULL;
-    }
-    printf("Screenshot success\n");
+
     GError *err = NULL;
-    GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file(TEMPFILE, &err);
-    // clean up grabage
-    unlink(TEMPFILE);
-    if(err || !pixbuf) {
-        printf("pixbuf failure: %s\n", err->message);
-        g_error_free(err);
-        return NULL;
+    GdkPixbuf *pixbuf = NULL;
+
+    // Check if we're on an allowed workspace
+    if(is_allowed_workspace()) {
+        printf("On allowed workspace (8, 9, or 0) - taking fresh screenshot\n");
+        int res = screenshot();
+        if(res != 0) {
+            printf("Screenshot call failed: %d\n", res);
+            return NULL;
+        }
+        printf("Screenshot success\n");
+
+        pixbuf = gdk_pixbuf_new_from_file(TEMPFILE, &err);
+        if(err || !pixbuf) {
+            printf("pixbuf failure: %s\n", err->message);
+            if(err) g_error_free(err);
+            unlink(TEMPFILE);
+            return NULL;
+        }
+
+        // Save a copy to cache for use on other workspaces
+        GError *save_err = NULL;
+        gdk_pixbuf_save(pixbuf, CACHEFILE, "png", &save_err, NULL);
+        if(save_err) {
+            printf("Warning: Could not save cache: %s\n", save_err->message);
+            g_error_free(save_err);
+        } else {
+            printf("Screenshot cached for other workspaces\n");
+        }
+
+        unlink(TEMPFILE);
+    } else {
+        printf("On non-allowed workspace - using cached screenshot\n");
+
+        // Try to load cached screenshot
+        pixbuf = gdk_pixbuf_new_from_file(CACHEFILE, &err);
+        if(err || !pixbuf) {
+            printf("WARNING: No cached screenshot available! Taking fresh one anyway.\n");
+            if(err) {
+                printf("Cache load error: %s\n", err->message);
+                g_error_free(err);
+                err = NULL;
+            }
+
+            // Fallback: take a fresh screenshot
+            int res = screenshot();
+            if(res != 0) {
+                printf("Screenshot call failed: %d\n", res);
+                return NULL;
+            }
+            pixbuf = gdk_pixbuf_new_from_file(TEMPFILE, &err);
+            unlink(TEMPFILE);
+            if(err || !pixbuf) {
+                printf("pixbuf failure: %s\n", err->message);
+                if(err) g_error_free(err);
+                return NULL;
+            }
+        } else {
+            printf("Using cached screenshot successfully\n");
+        }
     }
+
     printf("Pixbuf success\n");
     return pixbuf;
 }
@@ -131,7 +207,7 @@ extern Status XGetWindowAttributes(Display *display, Window w, XWindowAttributes
 }
 
 int get_active_window_name(char *buf, int bufsize) {
-    FILE *fp = popen("swaymsg -t get_tree | jq -r '.. | (.nodes? // empty)[] | select(.focused) | .name'", "r");
+    FILE *fp = popen("hyprctl activewindow -j | jq -r '.title'", "r");
     if(!fp) {
         printf("Could not popen\n");
         return 0;
@@ -145,7 +221,7 @@ int get_active_window_name(char *buf, int bufsize) {
     return strlen(buf)+1;
 }
 int get_active_window_pid() {
-    FILE *fp = popen("swaymsg -t get_tree | jq -r '.. | (.nodes? // empty)[] | select(.focused) | .pid'", "r");
+    FILE *fp = popen("hyprctl activewindow -j | jq -r '.pid'", "r");
     if(!fp) {
         printf("Could not popen\n");
         return 0;
