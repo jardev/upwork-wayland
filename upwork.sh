@@ -14,8 +14,10 @@ if [ -z "$WAYLAND_DISPLAY" ]; then
     exec "$UPWORK" "$@"
 fi
 
-# Remove old cache file on startup
+# Remove old cache files on startup
 rm -f /tmp/upwork-cache.png
+rm -f /tmp/upwork-cache-window-name
+rm -f /tmp/upwork-cache-window-pid
 
 # Check if workspace monitor is running, if not start it
 if ! pgrep -f "workspace-monitor.sh" > /dev/null; then
